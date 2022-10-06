@@ -51,6 +51,8 @@ import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import com.google.android.mms.MmsException;
 import com.google.android.mms.pdu.GenericPdu;
 import com.google.android.mms.pdu.PduComposer;
@@ -170,6 +172,7 @@ public class MmsProvider extends ContentProvider {
                 getContext(), getCallingPackage(), Binder.getCallingUid());
 
         // If access is restricted, we don't allow subqueries in the query.
+        Log.v(TAG, "accessRestricted=" + accessRestricted);
         if (accessRestricted) {
             SqlQueryChecker.checkQueryParametersForSubqueries(projection, selection, sortOrder);
         }
@@ -1300,7 +1303,8 @@ public class MmsProvider extends ContentProvider {
         sURLMatcher.addURI("mms", "get-pdu",    MMS_GET_PDU);
     }
 
-    private SQLiteOpenHelper mOpenHelper;
+    @VisibleForTesting
+    public SQLiteOpenHelper mOpenHelper;
 
     private static String concatSelections(String selection1, String selection2) {
         if (TextUtils.isEmpty(selection1)) {
