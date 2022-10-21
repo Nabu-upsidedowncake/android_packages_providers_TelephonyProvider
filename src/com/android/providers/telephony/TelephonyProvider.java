@@ -2710,8 +2710,8 @@ public class TelephonyProvider extends ContentProvider
                 if (oldType.equals("") || newType.equals("")) {
                     newRow.put(TYPE, "");
                 } else {
-                    String[] oldTypes = oldType.toLowerCase().split(",");
-                    String[] newTypes = newType.toLowerCase().split(",");
+                    String[] oldTypes = oldType.toLowerCase(Locale.ROOT).split(",");
+                    String[] newTypes = newType.toLowerCase(Locale.ROOT).split(",");
 
                     if (VDBG) {
                         log("mergeFieldsAndUpdateDb: Calling separateRowsNeeded() oldType=" +
@@ -3796,7 +3796,7 @@ public class TelephonyProvider extends ContentProvider
                             DEFAULT_INT_COLUMN_VALUE));
             if (isoCountryCodeFromDb != null
                     && !wfcRestoreBlockedCountries
-                            .contains(isoCountryCodeFromDb.toLowerCase())) {
+                            .contains(isoCountryCodeFromDb.toLowerCase(Locale.ROOT))) {
                 // Don't restore COLUMN_WFC_IMS_ENABLED if the sim is from one of the countries that
                 // requires WFC entitlement.
                 contentValues.put(Telephony.SimInfo.COLUMN_WFC_IMS_ENABLED,
@@ -5354,7 +5354,7 @@ public class TelephonyProvider extends ContentProvider
     }
 
     private static int getMvnoTypeIntFromString(String mvnoType) {
-        String mvnoTypeString = TextUtils.isEmpty(mvnoType) ? mvnoType : mvnoType.toLowerCase();
+        String mvnoTypeString = TextUtils.isEmpty(mvnoType) ? mvnoType : mvnoType.toLowerCase(Locale.ROOT);
         Integer mvnoTypeInt = MVNO_TYPE_STRING_MAP.get(mvnoTypeString);
         return  mvnoTypeInt == null ? 0 : mvnoTypeInt;
     }
@@ -5546,32 +5546,14 @@ public class TelephonyProvider extends ContentProvider
         if (overrideRule != null) {
             ContentValues cv = new ContentValues(1);
 
-            cv.put(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES,
-                    convertFromOverrideRuleLegacy(overrideRule));
+            // convert override rule to its corresponding mobile data policy
+            overrideRule = overrideRule.contains("mms") ?
+                    String.valueOf(TelephonyManager.MOBILE_DATA_POLICY_MMS_ALWAYS_ALLOWED): "";
+            cv.put(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES, overrideRule);
             db.update(SIMINFO_TABLE, cv,
                     Telephony.SimInfo.COLUMN_UNIQUE_KEY_SUBSCRIPTION_ID + "=?",
                     new String[]{subId});
         }
-    }
-
-    /**
-     * Convert legacy override rule retrieved from Telephony database to mobile data policy.
-     *
-     * @param rules String legacy override rule retrieved from Telephony database.
-     * @return The corresponding mobile data policy.
-     */
-    private static String convertFromOverrideRuleLegacy(@NonNull String rules) {
-        if (TextUtils.isEmpty(rules)) return null;
-        String policies = "";
-        if (rules.contains("mms")) {
-            policies += String.valueOf(TelephonyManager.MOBILE_DATA_POLICY_MMS_ALWAYS_ALLOWED);
-        }
-        if (rules.contains("*")) {
-            if (policies.length() != 0) policies += ",";
-            policies += String.valueOf(
-                    TelephonyManager.MOBILE_DATA_POLICY_DATA_ON_NON_DEFAULT_DURING_VOICE_CALL);
-        }
-        return policies;
     }
 
     /**
