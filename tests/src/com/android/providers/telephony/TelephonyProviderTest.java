@@ -48,7 +48,7 @@ import android.test.mock.MockContext;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.text.TextUtils;
 import android.util.Log;
-
+import com.android.internal.telephony.LocalLog;
 import androidx.test.InstrumentationRegistry;
 
 import junit.framework.TestCase;
@@ -64,7 +64,9 @@ import com.android.internal.telephony.PhoneFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -358,6 +360,12 @@ public class TelephonyProviderTest extends TestCase {
         notifyChangeRestoreCount = 0;
         // Required to access SIMINFO table
         mTelephonyProviderTestable.fakeCallingUid(Process.PHONE_UID);
+        // Ignore local log during test
+        Field field = PhoneFactory.class.getDeclaredField("sLocalLogs");
+        field.setAccessible(true);
+        HashMap<String, LocalLog> localLogs = new HashMap<>();
+        localLogs.put("TelephonyProvider", new LocalLog(0));
+        field.set(null, localLogs);
     }
 
     private void setUpMockContext(boolean isActiveSubId) {
@@ -424,9 +432,9 @@ public class TelephonyProviderTest extends TestCase {
         };
         final String selection = Carriers.NUMERIC + "=?";
         String[] selectionArgs = { insertNumeric };
-        Log.d(TAG, "testInsertCarriers query projection: " + testProjection
+        Log.d(TAG, "testInsertCarriers query projection: " + Arrays.toString(testProjection)
                 + "\ntestInsertCarriers selection: " + selection
-                + "\ntestInsertCarriers selectionArgs: " + selectionArgs);
+                + "\ntestInsertCarriers selectionArgs: " + Arrays.toString(selectionArgs));
         Cursor cursor = mContentResolver.query(Carriers.CONTENT_URI,
                 testProjection, selection, selectionArgs, null);
 
@@ -600,9 +608,9 @@ public class TelephonyProviderTest extends TestCase {
         };
         final String selection = Carriers.NUMERIC + "=?";
         String[] selectionArgs = { insertNumeric };
-        Log.d(TAG, "testInsertCarriers query projection: " + testProjection
+        Log.d(TAG, "testInsertCarriers query projection: " + Arrays.toString(testProjection)
                 + "\ntestInsertCarriers selection: " + selection
-                + "\ntestInsertCarriers selectionArgs: " + selectionArgs);
+                + "\ntestInsertCarriers selectionArgs: " + Arrays.toString(selectionArgs));
         Cursor cursor = mContentResolver.query(uri, testProjection, selection, selectionArgs, null);
 
         // verify that inserted values match results of query
@@ -618,7 +626,7 @@ public class TelephonyProviderTest extends TestCase {
         final String selectionToDelete = Carriers.NUMERIC + "=?";
         String[] selectionArgsToDelete = { insertNumeric };
         Log.d(TAG, "testInsertCarriers deleting selection: " + selectionToDelete
-                + "testInsertCarriers selectionArgs: " + selectionArgs);
+                + "testInsertCarriers selectionArgs: " + Arrays.toString(selectionArgs));
         int numRowsDeleted = mContentResolver.delete(uri, selectionToDelete, selectionArgsToDelete);
         assertEquals(1, numRowsDeleted);
 
@@ -655,9 +663,9 @@ public class TelephonyProviderTest extends TestCase {
         };
         final String selection = Carriers.NUMERIC + "=?";
         String[] selectionArgs = { insertNumeric };
-        Log.d(TAG, "testInsertCarriers query projection: " + testProjection
+        Log.d(TAG, "testInsertCarriers query projection: " + Arrays.toString(testProjection)
                 + "\ntestInsertCarriers selection: " + selection
-                + "\ntestInsertCarriers selectionArgs: " + selectionArgs);
+                + "\ntestInsertCarriers selectionArgs: " + Arrays.toString(selectionArgs));
         Cursor cursor = mContentResolver.query(Carriers.CONTENT_URI,
                 testProjection, selection, selectionArgs, null);
 
@@ -677,7 +685,7 @@ public class TelephonyProviderTest extends TestCase {
         final String selectionToDelete = Carriers.NUMERIC + "=?";
         String[] selectionArgsToDelete = { insertNumeric };
         Log.d(TAG, "testInsertCarriers deleting selection: " + selectionToDelete
-                + "testInsertCarriers selectionArgs: " + selectionArgs);
+                + "testInsertCarriers selectionArgs: " + Arrays.toString(selectionArgs));
         int numRowsDeleted = mContentResolver.delete(Carriers.CONTENT_URI,
                 selectionToDelete, selectionArgsToDelete);
         assertEquals(1, numRowsDeleted);
@@ -729,7 +737,7 @@ public class TelephonyProviderTest extends TestCase {
         final String selection = SubscriptionManager.DISPLAY_NAME + "=?";
         String[] selectionArgs = { insertDisplayName };
         Log.d(TAG,"\ntestSimTable selection: " + selection
-                + "\ntestSimTable selectionArgs: " + selectionArgs.toString());
+                + "\ntestSimTable selectionArgs: " + Arrays.toString(selectionArgs));
         Cursor cursor = mContentResolver.query(SimInfo.CONTENT_URI,
                 testProjection, selection, selectionArgs, null);
 
@@ -751,7 +759,7 @@ public class TelephonyProviderTest extends TestCase {
         final String selectionToDelete = SubscriptionManager.DISPLAY_NAME + "=?";
         String[] selectionArgsToDelete = { insertDisplayName };
         Log.d(TAG, "testSimTable deleting selection: " + selectionToDelete
-                + "testSimTable selectionArgs: " + selectionArgs);
+                + "testSimTable selectionArgs: " + Arrays.toString(selectionArgs));
         int numRowsDeleted = mContentResolver.delete(SimInfo.CONTENT_URI,
                 selectionToDelete, selectionArgsToDelete);
         assertEquals(1, numRowsDeleted);
@@ -1671,7 +1679,6 @@ public class TelephonyProviderTest extends TestCase {
         assertEquals(1, cursor.getCount());
         cursor.moveToFirst();
         assertEquals(otherName, cursor.getString(0));
-        PhoneFactory.addLocalLog("TelephonyProvider", 1);
     }
 
     /**
