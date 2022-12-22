@@ -161,7 +161,7 @@ public class TelephonyProvider extends ContentProvider
     private static final boolean DBG = true;
     private static final boolean VDBG = false; // STOPSHIP if true
 
-    private static final int DATABASE_VERSION = 58 << 16;
+    private static final int DATABASE_VERSION = 60 << 16;
     private static final int URL_UNKNOWN = 0;
     private static final int URL_TELEPHONY = 1;
     private static final int URL_CURRENT = 2;
@@ -447,6 +447,8 @@ public class TelephonyProvider extends ContentProvider
         SIM_INFO_COLUMNS_TO_BACKUP.put(
                 Telephony.SimInfo.COLUMN_USAGE_SETTING,
                 Cursor.FIELD_TYPE_INTEGER);
+        SIM_INFO_COLUMNS_TO_BACKUP.put(
+                Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES, Cursor.FIELD_TYPE_STRING);
     }
 
     @VisibleForTesting
@@ -566,6 +568,7 @@ public class TelephonyProvider extends ContentProvider
                 + Telephony.SimInfo.SUBSCRIPTION_TYPE_LOCAL_SIM + ","
                 + Telephony.SimInfo.COLUMN_GROUP_OWNER + " TEXT,"
                 + Telephony.SimInfo.COLUMN_DATA_ENABLED_OVERRIDE_RULES + " TEXT,"
+                + Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES + " TEXT,"
                 + Telephony.SimInfo.COLUMN_IMSI + " TEXT,"
                 + Telephony.SimInfo.COLUMN_UICC_APPLICATIONS_ENABLED + " INTEGER DEFAULT 1,"
                 + Telephony.SimInfo.COLUMN_ALLOWED_NETWORK_TYPES + " BIGINT DEFAULT -1,"
@@ -583,7 +586,8 @@ public class TelephonyProvider extends ContentProvider
                 + Telephony.SimInfo.COLUMN_USAGE_SETTING + " INTEGER DEFAULT "
                 + SubscriptionManager.USAGE_SETTING_UNKNOWN + ","
                 + Telephony.SimInfo.COLUMN_TP_MESSAGE_REF +
-                "  INTEGER DEFAULT -1"
+                "  INTEGER DEFAULT -1,"
+                + Telephony.SimInfo.COLUMN_USER_HANDLE + " INTEGER DEFAULT " + UserHandle.USER_NULL
                 + ");";
     }
 
@@ -1825,6 +1829,50 @@ public class TelephonyProvider extends ContentProvider
                 }
                 oldVersion = 58 << 16 | 6;
             }
+
+            if (oldVersion < (59 << 16 | 6)) {
+                try {
+                    // Try to update the siminfo table with new columns.
+                    db.execSQL("ALTER TABLE " + SIMINFO_TABLE + " ADD COLUMN "
+                            + Telephony.SimInfo.COLUMN_USER_HANDLE
+                            + "  INTEGER DEFAULT " + UserHandle.USER_NULL +";");
+                } catch (SQLiteException e) {
+                    if (DBG) {
+                        log("onUpgrade failed to update " + SIMINFO_TABLE
+                                + " to add message Reference. ");
+                    }
+                }
+                oldVersion = 59 << 16 | 6;
+            }
+            if (oldVersion < (60 << 16 | 6)) {
+                // Update the siminfo table with new column enabled_data_mobile_policies
+                // and set its value to be a copy of data_enabled_override_rules.
+                try {
+                    db.execSQL("ALTER TABLE " + SIMINFO_TABLE + " ADD COLUMN "
+                            + Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES
+                            + " TEXT;");
+                } catch (SQLiteException e) {
+                    if (DBG) {
+                        log("onUpgrade failed to insert "
+                                +Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES +" to "
+                                + SIMINFO_TABLE);
+                    }
+                }
+                // Migrate the old Long values over to String
+                String[] proj = {Telephony.SimInfo.COLUMN_UNIQUE_KEY_SUBSCRIPTION_ID,
+                        Telephony.SimInfo.COLUMN_DATA_ENABLED_OVERRIDE_RULES};
+                try (Cursor c = db.query(SIMINFO_TABLE, proj, null, null, null, null, null)) {
+                    while (c.moveToNext()) {
+                        fillInEnabledMobileDataPoliciesAtCursor(db, c);
+                    }
+                } catch (SQLiteException e) {
+                    if (DBG) {
+                        log("can't migrate value from COLUMN_DATA_ENABLED_OVERRIDE_RULES to "
+                                + "COLUMN_ENABLED_MOBILE_DATA_POLICIES");
+                    }
+                }
+                oldVersion = 60 << 16 | 6;
+            }
             if (DBG) {
                 log("dbh.onUpgrade:- db=" + db + " oldV=" + oldVersion + " newV=" + newVersion);
             }
@@ -2662,8 +2710,8 @@ public class TelephonyProvider extends ContentProvider
                 if (oldType.equals("") || newType.equals("")) {
                     newRow.put(TYPE, "");
                 } else {
-                    String[] oldTypes = oldType.toLowerCase().split(",");
-                    String[] newTypes = newType.toLowerCase().split(",");
+                    String[] oldTypes = oldType.toLowerCase(Locale.ROOT).split(",");
+                    String[] newTypes = newType.toLowerCase(Locale.ROOT).split(",");
 
                     if (VDBG) {
                         log("mergeFieldsAndUpdateDb: Calling separateRowsNeeded() oldType=" +
@@ -3662,7 +3710,7 @@ public class TelephonyProvider extends ContentProvider
                 PersistableBundle backedUpSimInfoEntry, int backupDataFormatVersion,
                 String isoCountryCodeFromDb,
                 List<String> wfcRestoreBlockedCountries) {
-            if (DATABASE_VERSION != 58 << 16) {
+            if (DATABASE_VERSION != 60 << 16) {
                 throw new AssertionError("The database schema has been updated which might make "
                     + "the format of #BACKED_UP_SIM_SPECIFIC_SETTINGS_FILE outdated. Make sure to "
                     + "1) review whether any of the columns in #SIM_INFO_COLUMNS_TO_BACKUP have "
@@ -3704,6 +3752,12 @@ public class TelephonyProvider extends ContentProvider
              * Also make sure to add necessary removal of sensitive settings in
              * polishContentValues(ContentValues contentValues).
              */
+            if (backupDataFormatVersion >= 60 << 16) {
+                contentValues.put(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES,
+                        backedUpSimInfoEntry.getString(
+                                Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES,
+                                DEFAULT_STRING_COLUMN_VALUE));
+            }
             if (backupDataFormatVersion >= 57 << 16) {
                 contentValues.put(Telephony.SimInfo.COLUMN_USAGE_SETTING,
                         backedUpSimInfoEntry.getInt(
@@ -3742,7 +3796,7 @@ public class TelephonyProvider extends ContentProvider
                             DEFAULT_INT_COLUMN_VALUE));
             if (isoCountryCodeFromDb != null
                     && !wfcRestoreBlockedCountries
-                            .contains(isoCountryCodeFromDb.toLowerCase())) {
+                            .contains(isoCountryCodeFromDb.toLowerCase(Locale.ROOT))) {
                 // Don't restore COLUMN_WFC_IMS_ENABLED if the sim is from one of the countries that
                 // requires WFC entitlement.
                 contentValues.put(Telephony.SimInfo.COLUMN_WFC_IMS_ENABLED,
@@ -4961,6 +5015,12 @@ public class TelephonyProvider extends ContentProvider
                                         Telephony.SimInfo.COLUMN_USAGE_SETTING),
                                 usingSubId, subId), null, true, UserHandle.USER_ALL);
                     }
+                    if (values.containsKey(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES)) {
+                        getContext().getContentResolver().notifyChange(getNotifyContentUri(
+                                Uri.withAppendedPath(Telephony.SimInfo.CONTENT_URI,
+                                        Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES),
+                                usingSubId, subId), null, true, UserHandle.USER_ALL);
+                    }
                     break;
                 default:
                     getContext().getContentResolver().notifyChange(
@@ -5294,7 +5354,7 @@ public class TelephonyProvider extends ContentProvider
     }
 
     private static int getMvnoTypeIntFromString(String mvnoType) {
-        String mvnoTypeString = TextUtils.isEmpty(mvnoType) ? mvnoType : mvnoType.toLowerCase();
+        String mvnoTypeString = TextUtils.isEmpty(mvnoType) ? mvnoType : mvnoType.toLowerCase(Locale.ROOT);
         Integer mvnoTypeInt = MVNO_TYPE_STRING_MAP.get(mvnoTypeString);
         return  mvnoTypeInt == null ? 0 : mvnoTypeInt;
     }
@@ -5456,6 +5516,40 @@ public class TelephonyProvider extends ContentProvider
 
             cv.put(Telephony.SimInfo.COLUMN_ALLOWED_NETWORK_TYPES_FOR_REASONS,
                     "carrier=" + allowedNetworkTypesReasonCarrier);
+            db.update(SIMINFO_TABLE, cv,
+                    Telephony.SimInfo.COLUMN_UNIQUE_KEY_SUBSCRIPTION_ID + "=?",
+                    new String[]{subId});
+        }
+    }
+
+    /**
+     * Migrate the old values{@link Telephony.SimInfo#COLUMN_DATA_ENABLED_OVERRIDE_RULES} over to
+     * String{@link Telephony.SimInfo#COLUMN_ENABLED_MOBILE_DATA_POLICIES}
+     *
+     * @param db The sqlite database to write to
+     * @param c The {@link Telephony.SimInfo#COLUMN_DATA_ENABLED_OVERRIDE_RULES} values in the sim info
+     *         table.
+     */
+    public static void fillInEnabledMobileDataPoliciesAtCursor(SQLiteDatabase db, Cursor c) {
+        String overrideRule;
+        String subId;
+        try {
+            overrideRule = c.getString(
+                    c.getColumnIndexOrThrow(Telephony.SimInfo.COLUMN_DATA_ENABLED_OVERRIDE_RULES));
+            subId = c.getString(c.getColumnIndexOrThrow(
+                    Telephony.SimInfo.COLUMN_UNIQUE_KEY_SUBSCRIPTION_ID));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "COLUMN_DATA_ENABLED_OVERRIDE_RULES not found.");
+            return;
+        }
+
+        if (overrideRule != null) {
+            ContentValues cv = new ContentValues(1);
+
+            // convert override rule to its corresponding mobile data policy
+            overrideRule = overrideRule.contains("mms") ?
+                    String.valueOf(TelephonyManager.MOBILE_DATA_POLICY_MMS_ALWAYS_ALLOWED): "";
+            cv.put(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES, overrideRule);
             db.update(SIMINFO_TABLE, cv,
                     Telephony.SimInfo.COLUMN_UNIQUE_KEY_SUBSCRIPTION_ID + "=?",
                     new String[]{subId});

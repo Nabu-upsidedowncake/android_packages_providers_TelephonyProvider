@@ -39,7 +39,6 @@ import android.provider.Telephony;
 import android.provider.Telephony.CanonicalAddressesColumns;
 import android.provider.Telephony.Mms;
 import android.provider.Telephony.Mms.Addr;
-import android.provider.Telephony.Mms.Inbox;
 import android.provider.Telephony.Mms.Part;
 import android.provider.Telephony.Mms.Rate;
 import android.provider.Telephony.MmsSms;
@@ -48,7 +47,10 @@ import android.support.v4.content.FileProvider;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.text.TextUtils;
+import android.util.EventLog;
 import android.util.Log;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import com.google.android.mms.MmsException;
 import com.google.android.mms.pdu.GenericPdu;
@@ -91,12 +93,27 @@ public class MmsProvider extends ContentProvider {
         "pdu_data"
     };
 
+    private ProviderUtilWrapper providerUtilWrapper = new ProviderUtilWrapper();
+
+    @VisibleForTesting
+    public void setProviderUtilWrapper(ProviderUtilWrapper providerUtilWrapper) {
+        this.providerUtilWrapper = providerUtilWrapper;
+    }
+
     @Override
     public boolean onCreate() {
         setAppOps(AppOpsManager.OP_READ_SMS, AppOpsManager.OP_WRITE_SMS);
         mOpenHelper = MmsSmsDatabaseHelper.getInstanceForCe(getContext());
         TelephonyBackupAgent.DeferredSmsMmsRestoreService.startIfFilesExist(getContext());
         return true;
+    }
+
+    // wrapper class to allow easier mocking of the static ProviderUtil in tests
+    @VisibleForTesting
+    public static class ProviderUtilWrapper {
+        public boolean isAccessRestricted(Context context, String packageName, int uid) {
+            return ProviderUtil.isAccessRestricted(context, packageName, uid);
+        }
     }
 
     /**
@@ -169,6 +186,7 @@ public class MmsProvider extends ContentProvider {
                 getContext(), getCallingPackage(), Binder.getCallingUid());
 
         // If access is restricted, we don't allow subqueries in the query.
+        Log.v(TAG, "accessRestricted=" + accessRestricted);
         if (accessRestricted) {
             SqlQueryChecker.checkQueryParametersForSubqueries(projection, selection, sortOrder);
         }
@@ -512,6 +530,15 @@ public class MmsProvider extends ContentProvider {
         final String callerPkg = getCallingPackage();
         int msgBox = Mms.MESSAGE_BOX_ALL;
         boolean notify = true;
+
+        boolean forceNoNotify = values.containsKey(TelephonyBackupAgent.NOTIFY)
+                && !values.getAsBoolean(TelephonyBackupAgent.NOTIFY);
+        values.remove(TelephonyBackupAgent.NOTIFY);
+        // check isAccessRestricted to prevent third parties from setting NOTIFY = false maliciously
+        if (forceNoNotify && !providerUtilWrapper.isAccessRestricted(
+                getContext(), getCallingPackage(), Binder.getCallingUid())) {
+            notify = false;
+        }
 
         int match = sURLMatcher.match(uri);
         if (LOCAL_LOGV) {
@@ -1053,13 +1080,21 @@ public class MmsProvider extends ContentProvider {
             case MMS_PART_RESET_FILE_PERMISSION:
                 String path = getContext().getDir(PARTS_DIR_NAME, 0).getPath() + '/' +
                         uri.getPathSegments().get(1);
-                // Reset the file permission back to read for everyone but me.
+
                 try {
+                    String partsDirPath = getContext().getDir(PARTS_DIR_NAME, 0).getCanonicalPath();
+                    if (!new File(path).getCanonicalPath().startsWith(partsDirPath)) {
+                        EventLog.writeEvent(0x534e4554, "240685104",
+                                Binder.getCallingUid(), (TAG + " update: path " + path +
+                                        " does not start with " + partsDirPath));
+                        return 0;
+                    }
+                    // Reset the file permission back to read for everyone but me.
                     Os.chmod(path, 0644);
                     if (LOCAL_LOGV) {
                         Log.d(TAG, "MmsProvider.update chmod is successful for path: " + path);
                     }
-                } catch (ErrnoException e) {
+                } catch (ErrnoException | IOException e) {
                     Log.e(TAG, "Exception in chmod: " + e);
                 }
                 return 0;
@@ -1291,7 +1326,8 @@ public class MmsProvider extends ContentProvider {
         sURLMatcher.addURI("mms", "get-pdu",    MMS_GET_PDU);
     }
 
-    private SQLiteOpenHelper mOpenHelper;
+    @VisibleForTesting
+    public SQLiteOpenHelper mOpenHelper;
 
     private static String concatSelections(String selection1, String selection2) {
         if (TextUtils.isEmpty(selection1)) {

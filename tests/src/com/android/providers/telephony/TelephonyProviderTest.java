@@ -218,6 +218,8 @@ public class TelephonyProviderTest extends TestCase {
                 arbitraryStringVal);
         contentValues.put(Telephony.SimInfo.COLUMN_NR_ADVANCED_CALLING_ENABLED, arbitraryIntVal);
         contentValues.put(Telephony.SimInfo.COLUMN_USAGE_SETTING, arbitraryIntVal);
+        contentValues.put(Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES,
+                arbitraryStringVal);
         if (isoCountryCode != null) {
             contentValues.put(Telephony.SimInfo.COLUMN_ISO_COUNTRY_CODE, isoCountryCode);
         }
@@ -714,6 +716,7 @@ public class TelephonyProviderTest extends TestCase {
         final String insertCardId = "exampleCardId";
         final int insertProfileClass = SubscriptionManager.PROFILE_CLASS_DEFAULT;
         final int insertPortIndex = 1;
+        final int insertUserHandle = 0;
         contentValues.put(SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID, insertSubId);
         contentValues.put(SubscriptionManager.DISPLAY_NAME, insertDisplayName);
         contentValues.put(SubscriptionManager.CARRIER_NAME, insertCarrierName);
@@ -721,6 +724,7 @@ public class TelephonyProviderTest extends TestCase {
         contentValues.put(SubscriptionManager.CARD_ID, insertCardId);
         contentValues.put(SubscriptionManager.PROFILE_CLASS, insertProfileClass);
         contentValues.put(SubscriptionManager.PORT_INDEX, insertPortIndex);
+        contentValues.put(SubscriptionManager.USER_HANDLE, insertUserHandle);
 
         Log.d(TAG, "testSimTable Inserting contentValues: " + contentValues);
         mContentResolver.insert(SimInfo.CONTENT_URI, contentValues);
@@ -733,6 +737,7 @@ public class TelephonyProviderTest extends TestCase {
             SubscriptionManager.CARD_ID,
             SubscriptionManager.PROFILE_CLASS,
             SubscriptionManager.PORT_INDEX,
+            SubscriptionManager.USER_HANDLE,
         };
         final String selection = SubscriptionManager.DISPLAY_NAME + "=?";
         String[] selectionArgs = { insertDisplayName };
@@ -750,10 +755,12 @@ public class TelephonyProviderTest extends TestCase {
         final String resultCardId = cursor.getString(2);
         final int resultProfileClass = cursor.getInt(3);
         final int resultPortIndex = cursor.getInt(4);
+        final int resultUserHandle = cursor.getInt(5);
         assertEquals(insertSubId, resultSubId);
         assertEquals(insertCarrierName, resultCarrierName);
         assertEquals(insertCardId, resultCardId);
         assertEquals(insertPortIndex, resultPortIndex);
+        assertEquals(insertUserHandle, resultUserHandle);
 
         // delete test content
         final String selectionToDelete = SubscriptionManager.DISPLAY_NAME + "=?";
@@ -812,6 +819,9 @@ public class TelephonyProviderTest extends TestCase {
                 ARBITRARY_SIMINFO_DB_TEST_INT_VALUE_1,
                 getIntValueFromCursor(
                         cursor, Telephony.SimInfo.COLUMN_NR_ADVANCED_CALLING_ENABLED));
+        assertEquals(ARBITRARY_SIMINFO_DB_TEST_STRING_VALUE_1,
+                getStringValueFromCursor(cursor,
+                        Telephony.SimInfo.COLUMN_ENABLED_MOBILE_DATA_POLICIES));
         assertRestoredSubIdIsRemembered();
     }
 
@@ -996,6 +1006,11 @@ public class TelephonyProviderTest extends TestCase {
     private int getIntValueFromCursor(Cursor cursor, String columnName) {
         int columnIndex = cursor.getColumnIndex(columnName);
         return cursor.getInt(columnIndex);
+    }
+
+    private String getStringValueFromCursor(Cursor cursor, String columnName) {
+        int columnIndex = cursor.getColumnIndex(columnName);
+        return cursor.getString(columnIndex);
     }
 
     private int parseIdFromInsertedUri(Uri uri) throws NumberFormatException {
