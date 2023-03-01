@@ -25,6 +25,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.UriMatcher;
 import android.database.Cursor;
+import android.database.DatabaseUtils;
 import android.database.MatrixCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
@@ -46,11 +47,14 @@ import android.provider.Telephony.Threads;
 import android.support.v4.content.FileProvider;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.telephony.SmsManager;
+import android.telephony.SubscriptionManager;
 import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telephony.TelephonyPermissions;
 
 import com.google.android.mms.MmsException;
 import com.google.android.mms.pdu.GenericPdu;
@@ -178,12 +182,14 @@ public class MmsProvider extends ContentProvider {
     @Override
     public Cursor query(Uri uri, String[] projection,
             String selection, String[] selectionArgs, String sortOrder) {
+        final int callerUid = Binder.getCallingUid();
+        final UserHandle callerUserHandle = Binder.getCallingUserHandle();
         // First check if a restricted view of the "pdu" table should be used based on the
         // caller's identity. Only system, phone or the default sms app can have full access
         // of mms data. For other apps, we present a restricted view which only contains sent
         // or received messages, without wap pushes.
         final boolean accessRestricted = ProviderUtil.isAccessRestricted(
-                getContext(), getCallingPackage(), Binder.getCallingUid());
+                getContext(), getCallingPackage(), callerUid);
 
         // If access is restricted, we don't allow subqueries in the query.
         Log.v(TAG, "accessRestricted=" + accessRestricted);
@@ -328,6 +334,23 @@ public class MmsProvider extends ContentProvider {
             default:
                 Log.e(TAG, "query: invalid request: " + uri);
                 return null;
+        }
+
+        if (qb.getTables().equals(pduTable)) {
+            String selectionBySubIds;
+            final long token = Binder.clearCallingIdentity();
+            try {
+                // Filter MMS based on subId.
+                selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
+                        callerUserHandle);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+            if (selectionBySubIds == null) {
+                // No subscriptions associated with user, return empty cursor.
+                return new MatrixCursor((projection == null) ? (new String[] {}) : projection);
+            }
+            selection = DatabaseUtils.concatenateWhere(selection, selectionBySubIds);
         }
 
         String finalSortOrder = null;
@@ -527,6 +550,7 @@ public class MmsProvider extends ContentProvider {
     @Override
     public Uri insert(Uri uri, ContentValues values) {
         final int callerUid = Binder.getCallingUid();
+        final UserHandle callerUserHandle = Binder.getCallingUserHandle();
         final String callerPkg = getCallingPackage();
         int msgBox = Mms.MESSAGE_BOX_ALL;
         boolean notify = true;
@@ -536,7 +560,7 @@ public class MmsProvider extends ContentProvider {
         values.remove(TelephonyBackupAgent.NOTIFY);
         // check isAccessRestricted to prevent third parties from setting NOTIFY = false maliciously
         if (forceNoNotify && !providerUtilWrapper.isAccessRestricted(
-                getContext(), getCallingPackage(), Binder.getCallingUid())) {
+                getContext(), getCallingPackage(), callerUid)) {
             notify = false;
         }
 
@@ -597,6 +621,22 @@ public class MmsProvider extends ContentProvider {
         long rowId;
 
         if (table.equals(TABLE_PDU)) {
+            int subId;
+            if (values.containsKey(Telephony.Sms.SUBSCRIPTION_ID)) {
+                subId = values.getAsInteger(Telephony.Sms.SUBSCRIPTION_ID);
+            } else {
+                subId = SmsManager.getDefaultSmsSubscriptionId();
+                if (SubscriptionManager.isValidSubscriptionId(subId)) {
+                    values.put(Telephony.Sms.SUBSCRIPTION_ID, subId);
+                }
+            }
+
+            if (!TelephonyPermissions
+                    .checkSubscriptionAssociatedWithUser(getContext(), subId, callerUserHandle)) {
+                // TODO(b/258629881): Display error dialog.
+                return null;
+            }
+
             boolean addDate = !values.containsKey(Mms.DATE);
             boolean addMsgBox = !values.containsKey(Mms.MESSAGE_BOX);
 
@@ -863,6 +903,7 @@ public class MmsProvider extends ContentProvider {
     @Override
     public int delete(Uri uri, String selection,
             String[] selectionArgs) {
+        final UserHandle callerUserHandle = Binder.getCallingUserHandle();
         int match = sURLMatcher.match(uri);
         if (LOCAL_LOGV) {
             Log.v(TAG, "Delete uri=" + uri + ", match=" + match);
@@ -921,6 +962,21 @@ public class MmsProvider extends ContentProvider {
         int deletedRows = 0;
 
         if (TABLE_PDU.equals(table)) {
+            final long token = Binder.clearCallingIdentity();
+            String selectionBySubIds;
+            try {
+                // Filter SMS based on subId.
+                selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
+                        callerUserHandle);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+            if (selectionBySubIds == null) {
+                // No subscriptions associated with user, return 0.
+                return 0;
+            }
+            finalSelection = DatabaseUtils.concatenateWhere(finalSelection, selectionBySubIds);
+
             deletedRows = deleteMessages(getContext(), db, finalSelection,
                                          selectionArgs, uri);
         } else if (TABLE_PART.equals(table)) {
@@ -1045,6 +1101,7 @@ public class MmsProvider extends ContentProvider {
             return 0;
         }
         final int callerUid = Binder.getCallingUid();
+        final UserHandle callerUserHandle = Binder.getCallingUserHandle();
         final String callerPkg = getCallingPackage();
         int match = sURLMatcher.match(uri);
         if (LOCAL_LOGV) {
@@ -1085,7 +1142,7 @@ public class MmsProvider extends ContentProvider {
                     String partsDirPath = getContext().getDir(PARTS_DIR_NAME, 0).getCanonicalPath();
                     if (!new File(path).getCanonicalPath().startsWith(partsDirPath)) {
                         EventLog.writeEvent(0x534e4554, "240685104",
-                                Binder.getCallingUid(), (TAG + " update: path " + path +
+                                callerUid, (TAG + " update: path " + path +
                                         " does not start with " + partsDirPath));
                         return 0;
                     }
@@ -1119,6 +1176,21 @@ public class MmsProvider extends ContentProvider {
             if (msgId != null) {
                 extraSelection = Mms._ID + "=" + msgId;
             }
+
+            final long token = Binder.clearCallingIdentity();
+            String selectionBySubIds;
+            try {
+                // Filter MMS based on subId.
+                selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
+                        callerUserHandle);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+            if (selectionBySubIds == null) {
+                // No subscriptions associated with user, return 0.
+                return 0;
+            }
+            extraSelection = DatabaseUtils.concatenateWhere(extraSelection, selectionBySubIds);
         } else if (table.equals(TABLE_PART)) {
             finalValues = new ContentValues(values);
 
