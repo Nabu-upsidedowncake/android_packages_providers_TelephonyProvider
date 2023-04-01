@@ -1576,18 +1576,17 @@ public class MmsSmsProvider extends ContentProvider {
         int affectedRows = 0;
         switch(URI_MATCHER.match(uri)) {
             case URI_CONVERSATIONS_MESSAGES:
-                if (selectionBySubIds == null) {
-                    // No subscriptions associated with user, return 0.
-                    return 0;
-                }
-                selection = DatabaseUtils.concatenateWhere(selection, selectionBySubIds);
-
                 String threadIdString = uri.getPathSegments().get(1);
                 if (values.containsKey(Threads.NOTIFICATION) ||
                         values.containsKey(Threads.ATTACHMENT_INFO)) {
                     String finalSelection = concatSelections(selection, "_id=" + threadIdString);
                     affectedRows = db.update(TABLE_THREADS, values, finalSelection, null);
                 } else {
+                    if (selectionBySubIds == null) {
+                        // No subscriptions associated with user, return 0.
+                        return 0;
+                    }
+                    selection = DatabaseUtils.concatenateWhere(selection, selectionBySubIds);
                     affectedRows = updateConversation(threadIdString, values,
                             selection, selectionArgs, callerUid, callerPkg);
                 }
