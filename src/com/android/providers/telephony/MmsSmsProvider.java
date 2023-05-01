@@ -1539,11 +1539,9 @@ public class MmsSmsProvider extends ContentProvider {
                 }
             }
             if (!TelephonyPermissions
-                    .checkSubscriptionAssociatedWithUser(getContext(), subId, callerUserHandle)) {
-                if (TelephonyUtils.isUidForeground(getContext(), callerUid)) {
-                    TelephonyUtils.showErrorIfSubscriptionAssociatedWithManagedProfile(getContext(),
-                        subId);
-                }
+                .checkSubscriptionAssociatedWithUser(getContext(), subId, callerUserHandle)) {
+                TelephonyUtils.showSwitchToManagedProfileDialogIfAppropriate(getContext(), subId,
+                    callerUid, getCallingPackage());
                 return null;
             }
 
