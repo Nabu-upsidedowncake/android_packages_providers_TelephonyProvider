@@ -85,7 +85,9 @@ public class SmsProvider extends ContentProvider {
     private static final Uri ICC_SUBID_URI = Uri.parse("content://sms/icc_subId");
     static final String TABLE_SMS = "sms";
     static final String TABLE_RAW = "raw";
-    private static final String TABLE_SR_PENDING = "sr_pending";
+    static final String TABLE_ATTACHMENTS = "attachments";
+    static final String TABLE_CANONICAL_ADDRESSES = "canonical_addresses";
+    static final String TABLE_SR_PENDING = "sr_pending";
     private static final String TABLE_WORDS = "words";
     static final String VIEW_SMS_RESTRICTED = "sms_restricted";
 
@@ -190,7 +192,6 @@ public class SmsProvider extends ContentProvider {
 
         Cursor emptyCursor = new MatrixCursor((projectionIn == null) ?
                 (new String[] {}) : projectionIn);
-
 
         // Generate the body of the query.
         int match = sURLMatcher.match(url);
@@ -390,34 +391,42 @@ public class SmsProvider extends ContentProvider {
                 return null;
         }
 
-        if (qb.getTables().equals(smsTable)) {
-            final long token = Binder.clearCallingIdentity();
-            String selectionBySubIds;
-            String selectionByEmergencyNumbers;
-            try {
-                // Filter SMS based on subId and emergency numbers.
-               selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
-                       callerUserHandle);
-               selectionByEmergencyNumbers = ProviderUtil
-                       .getSelectionByEmergencyNumbers(getContext());
-            } finally {
-                Binder.restoreCallingIdentity(token);
+        final long token = Binder.clearCallingIdentity();
+        String selectionBySubIds = null;
+        String selectionByEmergencyNumbers = null;
+        try {
+            // Filter SMS based on subId and emergency numbers.
+            selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
+                    callerUserHandle);
+            if (qb.getTables().equals(smsTable)) {
+                selectionByEmergencyNumbers = ProviderUtil
+                        .getSelectionByEmergencyNumbers(getContext());
             }
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
 
+        if (qb.getTables().equals(smsTable)) {
             if (selectionBySubIds == null && selectionByEmergencyNumbers == null) {
-                // No subscriptions associated with user and no emergne return empty cursor.
+                // No subscriptions associated with user
+                // and no emergency numbers return empty cursor.
                 return emptyCursor;
             }
-            String filter = "";
-            if (selectionBySubIds != null && selectionByEmergencyNumbers != null) {
-                filter = (selectionBySubIds + " OR " + selectionByEmergencyNumbers);
-            } else {
-                filter = selectionBySubIds == null ?
-                        selectionByEmergencyNumbers : selectionBySubIds;
+        } else {
+            if (selectionBySubIds == null) {
+                // No subscriptions associated with user return empty cursor.
+                return emptyCursor;
             }
-
-            selection = DatabaseUtils.concatenateWhere(selection, filter);
         }
+
+        String filter = "";
+        if (selectionBySubIds != null && selectionByEmergencyNumbers != null) {
+            filter = (selectionBySubIds + " OR " + selectionByEmergencyNumbers);
+        } else {
+            filter = selectionBySubIds == null ?
+                    selectionByEmergencyNumbers : selectionBySubIds;
+        }
+        selection = DatabaseUtils.concatenateWhere(selection, filter);
 
         String orderBy = null;
 
@@ -883,16 +892,22 @@ public class SmsProvider extends ContentProvider {
             }
         }
 
-        if (table.equals(TABLE_SMS)) {
-            int subId;
-            if (values.containsKey(Telephony.Sms.SUBSCRIPTION_ID)) {
-                subId = values.getAsInteger(Telephony.Sms.SUBSCRIPTION_ID);
-            } else {
-                subId = SmsManager.getDefaultSmsSubscriptionId();
-                if (SubscriptionManager.isValidSubscriptionId(subId)) {
-                    values.put(Telephony.Sms.SUBSCRIPTION_ID, subId);
-                }
+        // Insert subId value
+        int subId;
+        if (values.containsKey(Telephony.Sms.SUBSCRIPTION_ID)) {
+            subId = values.getAsInteger(Telephony.Sms.SUBSCRIPTION_ID);
+        } else {
+            // TODO (b/256992531): Currently, one sim card is set as default sms subId in work
+            //  profile. Default sms subId should be updated based on user pref.
+            subId = SmsManager.getDefaultSmsSubscriptionId();
+            if (SubscriptionManager.isValidSubscriptionId(subId)) {
+                values.put(Telephony.Sms.SUBSCRIPTION_ID, subId);
             }
+        }
+
+
+        if (table.equals(TABLE_SMS)) {
+            // Get destination address from values
             String address = "";
             if (values.containsKey(Sms.ADDRESS)) {
                 address = values.getAsString(Sms.ADDRESS);
@@ -920,6 +935,7 @@ public class SmsProvider extends ContentProvider {
             cv.put(Telephony.MmsSms.WordsTable.INDEXED_TEXT, values.getAsString("body"));
             cv.put(Telephony.MmsSms.WordsTable.SOURCE_ROW_ID, rowID);
             cv.put(Telephony.MmsSms.WordsTable.TABLE_ID, 1);
+            cv.put(MmsSms.WordsTable.SUBSCRIPTION_ID, subId);
             db.insert(TABLE_WORDS, Telephony.MmsSms.WordsTable.INDEXED_TEXT, cv);
         }
         if (rowID > 0) {
@@ -1336,8 +1352,8 @@ public class SmsProvider extends ContentProvider {
         final int callerUid = Binder.getCallingUid();
         final long token = Binder.clearCallingIdentity();
 
-        String selectionBySubIds;
-        String selectionByEmergencyNumbers;
+        String selectionBySubIds = null;
+        String selectionByEmergencyNumbers = null;
         try {
             // Filter SMS based on subId and emergency numbers.
             selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
@@ -1428,6 +1444,11 @@ public class SmsProvider extends ContentProvider {
                 break;
 
             case SMS_STATUS_PENDING:
+                if (selectionBySubIds == null) {
+                    // No subscriptions associated with user, return 0.
+                    return 0;
+                }
+                where = DatabaseUtils.concatenateWhere(where, selectionBySubIds);
                 count = db.delete("sr_pending", where, whereArgs);
                 break;
 
@@ -1649,34 +1670,42 @@ public class SmsProvider extends ContentProvider {
             values.remove(Sms.CREATOR);
         }
 
-        if (table.equals(TABLE_SMS)) {
-            final long token = Binder.clearCallingIdentity();
-            String selectionBySubIds;
-            String selectionByEmergencyNumbers;
-            try {
-                // Filter SMS based on subId and emergency numbers.
-                selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
-                        callerUserHandle);
+        final long token = Binder.clearCallingIdentity();
+        String selectionBySubIds = null;
+        String selectionByEmergencyNumbers = null;
+        try {
+            // Filter SMS based on subId and emergency numbers.
+            selectionBySubIds = ProviderUtil.getSelectionBySubIds(getContext(),
+                    callerUserHandle);
+            if (table.equals(TABLE_SMS)) {
                 selectionByEmergencyNumbers = ProviderUtil
                         .getSelectionByEmergencyNumbers(getContext());
-            } finally {
-                Binder.restoreCallingIdentity(token);
             }
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
 
+        if (table.equals(TABLE_SMS)) {
             if (selectionBySubIds == null && selectionByEmergencyNumbers == null) {
                 // No subscriptions associated with user and no emergency numbers, return 0.
                 return 0;
             }
-            String filter = "";
-            if (selectionBySubIds != null && selectionByEmergencyNumbers != null) {
-                filter = (selectionBySubIds + " OR " + selectionByEmergencyNumbers);
-            } else {
-                filter = selectionBySubIds == null ?
-                        selectionByEmergencyNumbers : selectionBySubIds;
+        } else {
+            if (selectionBySubIds == null) {
+                // No subscriptions associated with user, return 0.
+                return 0;
             }
-
-            where = DatabaseUtils.concatenateWhere(where, filter);
         }
+
+
+        String filter = "";
+        if (selectionBySubIds != null && selectionByEmergencyNumbers != null) {
+            filter = (selectionBySubIds + " OR " + selectionByEmergencyNumbers);
+        } else {
+            filter = selectionBySubIds == null ?
+                    selectionByEmergencyNumbers : selectionBySubIds;
+        }
+        where = DatabaseUtils.concatenateWhere(where, filter);
 
         where = DatabaseUtils.concatenateWhere(where, extraWhere);
         count = db.update(table, values, where, whereArgs);
